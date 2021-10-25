@@ -19,9 +19,8 @@ import (
     "encoding/json"
     "net/http"
     "io/ioutil"
-    "time"
 
-    "github.com/sokolovstas/gerrit-ssh"
+    "github.com/dongwenjuan/gerritssh"
     "gopkg.in/alecthomas/kingpin.v2"
 
 )
@@ -38,10 +37,11 @@ func main() {
     kingpin.Parse()
 
     var gerritServer = gerritssh.New(*gerritAddress, *gerritUser, *gerritUserPublickey)
+    defer gerritServer.StopStreamEvents()
 
     if *webhookUrl == "" {
         fmt.Println("No webhook config, stop gerrit ssh conn ")
-        gerritServer.StopStreamEvents()
+        return
     }
 
     // get gerrit event
@@ -50,32 +50,27 @@ func main() {
 
     // send gerrit event to webhook
     fmt.Println("Send Gerrit event")
-    go func() {
-    // event := gerritssh.StreamEvent{}
-        for {
-            select {
-            case event := <-gerritServer.ResultChan:
+    var event gerritssh.StreamEvent
+    for {
+        select {
+        case event = <-gerritServer.ResultChan:
+            go func(event gerritssh.StreamEvent) {
                 fmt.Println("Receive event:", event)
-                if *webhookUrl != "" {
-                    bytesData, _ := json.Marshal(&event)
-                    resp, err := http.Post(*webhookUrl,"application/json", bytes.NewReader(bytesData))
-                    if err != nil {
-                        fmt.Println("response err:", err)
-                        break
-                    }
-                    data, _ := ioutil.ReadAll(resp.Body)
-                    fmt.Println("response Status:", resp.Status, "response Body:", data)
-                    resp.Body.Close()
+                bytesData, _ := json.Marshal(&event)
+                resp, err := http.Post(*webhookUrl,"application/json", bytes.NewReader(bytesData))
+                defer resp.Body.Close()
+                if err != nil {
+                    fmt.Println("response err:", err)
+                    return
                 }
-            case <- gerritServer.StopChan:
-                fmt.Println("Gerrit ssh stop receive event stream, return for sending webhook")
-                return
-            default:
-                // fmt.Println("Receive no data, go to default case, do nothing")
-            }
+                data, _ := ioutil.ReadAll(resp.Body)
+                fmt.Println("response Status:", resp.Status, "response Body:", data)
+            }(event)
+        case <- gerritServer.StopChan:
+            fmt.Println("Gerrit ssh stop receive event stream, return for sending webhook")
+            return
+        default:
+            // fmt.Println("Receive no data, go to default case, do nothing")
         }
-    }()
-
-    time.Sleep(10000*time.Second)
-    fmt.Println("Return Gerrit event server")
+    }
 }
